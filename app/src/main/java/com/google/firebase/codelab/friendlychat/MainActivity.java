@@ -17,9 +17,11 @@ package com.google.firebase.codelab.friendlychat;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -27,10 +29,12 @@ import androidx.recyclerview.widget.RecyclerView;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -38,11 +42,26 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.bumptech.glide.Glide;
+import com.firebase.ui.database.FirebaseRecyclerAdapter;
+import com.firebase.ui.database.FirebaseRecyclerOptions;
+import com.firebase.ui.database.SnapshotParser;
 import com.google.android.gms.auth.api.Auth;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.Task;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.storage.FirebaseStorage;
+import com.google.firebase.storage.StorageReference;
+import com.google.firebase.storage.UploadTask;
+
+import org.w3c.dom.Text;
 
 import de.hdodenhof.circleimageview.CircleImageView;
 
@@ -88,6 +107,8 @@ public class MainActivity extends AppCompatActivity
     // Firebase instance variables
     private FirebaseAuth mFirebaseAuth;
     private FirebaseUser mFirebaseUser;
+    private DatabaseReference mFirebaseDatabaseReference;
+    private FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder> mFirebaseAdapter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -136,6 +157,17 @@ public class MainActivity extends AppCompatActivity
             @Override
             public void onClick(View view) {
                 // Send messages on click.
+                FriendlyMessage friendlyMessage = new FriendlyMessage(
+                        mMessageEditText.getText().toString(),
+                        mUsername,
+                        mPhotoUrl,
+                        null /* no image */
+                );
+
+                mFirebaseDatabaseReference.child(MESSAGES_CHILD)
+                        .push().setValue(friendlyMessage);
+
+                mMessageEditText.setText("");
             }
         });
 
@@ -144,6 +176,10 @@ public class MainActivity extends AppCompatActivity
             @Override
             public void onClick(View view) {
                 // Select image for image message on click.
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("image/*");
+                startActivityForResult(intent, REQUEST_IMAGE);
             }
         });
 
@@ -161,6 +197,112 @@ public class MainActivity extends AppCompatActivity
               mPhotoUrl = mFirebaseUser.getPhotoUrl().toString();
           }
         }
+
+        // New Child Entries
+        mFirebaseDatabaseReference = FirebaseDatabase.getInstance().getReference();
+
+        SnapshotParser<FriendlyMessage> parser = new SnapshotParser<FriendlyMessage>() {
+            @NonNull
+            @Override
+            public FriendlyMessage parseSnapshot(@NonNull DataSnapshot snapshot) {
+                FriendlyMessage friendlyMessage = snapshot.getValue(FriendlyMessage.class);
+                if (friendlyMessage != null) {
+                    friendlyMessage.setId(snapshot.getKey());
+                }
+                return friendlyMessage;
+            }
+        };
+
+        DatabaseReference messageRef = mFirebaseDatabaseReference.child(MESSAGES_CHILD);
+
+        FirebaseRecyclerOptions<FriendlyMessage> options =
+                new FirebaseRecyclerOptions.Builder<FriendlyMessage>()
+                .setQuery(messageRef, parser)
+                .build();
+
+        mFirebaseAdapter = new FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder>(options) {
+            @NonNull
+            @Override
+            public MessageViewHolder onCreateViewHolder(
+                    @NonNull ViewGroup parent,
+                    int viewType) {
+                LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+                return new MessageViewHolder(inflater.inflate(
+                        R.layout.item_message, parent, false));
+            }
+            @Override
+            protected void onBindViewHolder(
+                    @NonNull final MessageViewHolder holder,
+                    int position,
+                    @NonNull FriendlyMessage model) {
+
+                mProgressBar.setVisibility(ProgressBar.INVISIBLE);
+                if (model.getText() != null) {
+                    holder.messageTextView.setText(model.getText());
+                    holder.messageTextView.setVisibility(TextView.VISIBLE);
+                    holder.messageImageView.setVisibility(ImageView.GONE);
+                } else if (model.getImageUrl() != null) {
+                    String imageUrl = model.getImageUrl();
+                    if (imageUrl.startsWith("gs://")) {
+                        StorageReference storageReference = FirebaseStorage.getInstance()
+                                .getReferenceFromUrl(imageUrl);
+                        storageReference.getDownloadUrl().addOnCompleteListener(
+                                new OnCompleteListener<Uri>() {
+                                    @Override
+                                    public void onComplete(@NonNull Task<Uri> task) {
+                                        if (task.isSuccessful()) {
+                                            String downloadUrl = task.getResult().toString();
+                                            Glide.with(holder.messageImageView.getContext())
+                                                    .load(downloadUrl)
+                                                    .into(holder.messageImageView);
+                                        } else {
+                                            Log.w(TAG, "Getting download url was not successful.",
+                                                    task.getException());
+                                        }
+                                    }
+                                });
+                    } else {
+                        Glide.with(holder.messageImageView.getContext())
+                                .load(model.getImageUrl())
+                                .into(holder.messageImageView);
+                    }
+                    holder.messageImageView.setVisibility(ImageView.VISIBLE);
+                    holder.messageTextView.setVisibility(TextView.GONE);
+                }
+                holder.messengerTextView.setText(model.getName());
+                if (model.getPhotoUrl() == null) {
+                    holder.messengerImageView.setImageDrawable(
+                            ContextCompat.getDrawable(
+                                    MainActivity.this,
+                                    R.drawable.ic_account_circle_black_36dp));
+                } else {
+                    Glide.with(MainActivity.this)
+                            .load(model.getPhotoUrl())
+                            .into(holder.messengerImageView);
+                }
+            }
+        };
+
+        mFirebaseAdapter.registerAdapterDataObserver(new RecyclerView.AdapterDataObserver() {
+            @Override
+            public void onItemRangeInserted(int positionStart, int itemCount) {
+                super.onItemRangeInserted(positionStart, itemCount);
+
+                int friendlyMessageCount = mFirebaseAdapter.getItemCount();
+                int lastVisiblePosition =
+                        mLinearLayoutManager.findLastCompletelyVisibleItemPosition();
+                // If the recycler view is initially being loaded or the user
+                // is at the bottom of the list, scroll to the bottom of the
+                // list to show the newly added message.
+                if (lastVisiblePosition == -1 ||
+                        (positionStart >= (friendlyMessageCount -1) &&
+                                lastVisiblePosition == (positionStart -1))) {
+                    mMessageRecyclerView.scrollToPosition(positionStart);
+                }
+            }
+        });
+
+        mMessageRecyclerView.setAdapter(mFirebaseAdapter);
     }
 
     @Override
@@ -172,12 +314,14 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void onPause() {
+        mFirebaseAdapter.stopListening();
         super.onPause();
     }
 
     @Override
     public void onResume() {
         super.onResume();
+        mFirebaseAdapter.startListening();
     }
 
     @Override
@@ -208,10 +352,83 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        Log.d(TAG, "onctivityResult: requestCode="+requestCode+", resultCode"+resultCode);
+
+        if (requestCode == REQUEST_IMAGE) {
+            if (resultCode == RESULT_OK) {
+                if (data != null) {
+                    final Uri uri = data.getData();
+                    Log.d(TAG, "Uri: "+uri.toString());
+
+                    FriendlyMessage tempMessage =
+                            new FriendlyMessage(null, mUsername, mPhotoUrl, LOADING_IMAGE_URL);
+
+                    mFirebaseDatabaseReference.child(MESSAGES_CHILD).push()
+                            .setValue(tempMessage, new DatabaseReference.CompletionListener() {
+                                @Override
+                                public void onComplete(
+                                        @Nullable DatabaseError databaseError,
+                                        @NonNull DatabaseReference databaseReference
+                                ) {
+                                    if (databaseError == null) {
+                                        String key = databaseReference.getKey();
+                                        StorageReference storageReference =
+                                                FirebaseStorage.getInstance()
+                                                .getReference(mFirebaseUser.getUid())
+                                                .child(key)
+                                                .child(uri.getLastPathSegment());
+
+                                        putImageInStorage(storageReference, uri, key);
+                                    } else {
+                                        Log.w(TAG, "Unable to write message to database.",
+                                                databaseError.toException());
+                                    }
+
+                                }
+                            });
+                }
+            }
+        }
+    }
+
+    @Override
     public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
         // An unresolvable error has occurred and Google APIs (including Sign-In) will not
         // be available.
         Log.d(TAG, "onConnectionFailed:" + connectionResult);
         Toast.makeText(this, "Google Play Services error.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void putImageInStorage(StorageReference storageReference, Uri uri, final String key) {
+        storageReference.putFile(uri).addOnCompleteListener(MainActivity.this, new
+                OnCompleteListener<UploadTask.TaskSnapshot>() {
+                    @Override
+                    public void onComplete(@NonNull Task<UploadTask.TaskSnapshot> task) {
+                        if (task.isSuccessful()) {
+                            task.getResult().getMetadata().getReference().getDownloadUrl()
+                                    .addOnCompleteListener(MainActivity.this,
+                                            new OnCompleteListener<Uri>() {
+                                                @Override
+                                                public void onComplete(@NonNull Task<Uri> task) {
+                                                    if (task.isSuccessful()) {
+                                                        FriendlyMessage friendlyMessage = new
+                                                                FriendlyMessage(null,
+                                                                mUsername, mPhotoUrl,
+                                                                task.getResult().toString());
+                                                        mFirebaseDatabaseReference
+                                                                .child(MESSAGES_CHILD)
+                                                                .child(key)
+                                                                .setValue(friendlyMessage);
+                                                    }
+                                                }
+                                            });
+                        } else {
+                            Log.w(TAG, "Imaeg upload task was not successful.",
+                                    task.getException());
+                        }
+                    }
+                });
     }
 }
