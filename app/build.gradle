@@ -1,9 +1,10 @@
 apply plugin: 'com.android.application'
 apply plugin: 'io.fabric'
+apply plugin: 'com.google.gms.google-services'
 
 android {
     compileSdkVersion 29
-    buildToolsVersion '29.0.2'
+    buildToolsVersion '29.0.3'
 
     defaultConfig {
         applicationId "com.google.firebase.codelab.friendlychat"
@@ -53,6 +54,9 @@ dependencies {
     // Firebase UI
     implementation 'com.firebaseui:firebase-ui-database:6.2.1'
 
+    // Firebase Analytics
+    implementation 'com.google.firebase:firebase-analytics:17.4.1'
+
     // Testing dependencies
     androidTestImplementation 'junit:junit:4.13'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
@@ -60,5 +64,3 @@ dependencies {
     androidTestImplementation 'androidx.test:rules:1.2.0'
     androidTestImplementation 'androidx.annotation:annotation:1.1.0'
 }
-
-apply plugin: 'com.google.gms.google-services'
